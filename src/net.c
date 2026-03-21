@@ -61,47 +61,43 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_RECEIVE:
     case LWS_CALLBACK_CLIENT_RECEIVE:
-        /* Accumulate fragments — LWS may deliver one WebSocket message
-         * in multiple callbacks if it exceeds the internal rx buffer. */
         if (ctx->frag_len + len > sizeof(ctx->frag_buf)) {
-            ctx->frag_len = 0;  /* overflow: discard and resync */
+            ctx->frag_len = 0;
             break;
         }
         memcpy(ctx->frag_buf + ctx->frag_len, in, len);
         ctx->frag_len += len;
-        if (lws_remaining_packet_payload(wsi) > 0)
-            break;  /* more fragments on the way */
 
-        /* Complete message is now in frag_buf[0..frag_len-1] */
-        {
-            uint8_t *msg     = ctx->frag_buf;
-            size_t   msg_len = ctx->frag_len;
+        if (ctx->frag_len < 1) break;
+
+        if (ctx->frag_buf[0] == MSG_DEVICE) {
+            if (ctx->frag_len < sizeof(DeviceMsg)) break; /* incomplete */
             ctx->frag_len = 0;
-
-            if (msg_len < 1) break;
-            if (msg[0] == MSG_DEVICE) {
-                if (msg_len != sizeof(DeviceMsg)) {
-                    fprintf(stderr, "[net] bad device msg len %zu (expected %zu)\n",
-                            msg_len, sizeof(DeviceMsg));
-                    break;
+            DeviceMsg *desc = (DeviceMsg *)ctx->frag_buf;
+            fprintf(stderr, "[net] received device description: %s\n", desc->name);
+            UinputDev *vpad = malloc(sizeof(UinputDev));
+            if (uinput_create(vpad, desc) < 0) {
+                free(vpad);
+            } else {
+                if (ctx->remote_vpad) {
+                    uinput_destroy(ctx->remote_vpad);
+                    free(ctx->remote_vpad);
                 }
-                DeviceMsg *desc = (DeviceMsg *)msg;
-                fprintf(stderr, "[net] received device description: %s\n", desc->name);
-                UinputDev *vpad = malloc(sizeof(UinputDev));
-                if (uinput_create(vpad, desc) < 0) {
-                    free(vpad);
-                } else {
-                    ctx->remote_vpad = vpad;
-                }
-            } else if (msg[0] == MSG_EVENTS) {
-                if (msg_len < 2 || !ctx->remote_vpad) break;
-                int count = msg[1];
-                if (count < 1 || count > MAX_BATCH) break;
-                if ((size_t)count * sizeof(WireEvent) + 2 > msg_len) break;
-                const WireEvent *events = (const WireEvent *)(msg + 2);
-                fprintf(stderr, "[rx] %d events -> uinput\n", count);
-                uinput_write_events(ctx->remote_vpad, events, count);
+                ctx->remote_vpad = vpad;
             }
+        } else if (ctx->frag_buf[0] == MSG_EVENTS) {
+            if (ctx->frag_len < 2) break; /* incomplete */
+            int count = ctx->frag_buf[1];
+            if (count < 1 || count > MAX_BATCH) { ctx->frag_len = 0; break; }
+            size_t needed = 2 + (size_t)count * sizeof(WireEvent);
+            if (ctx->frag_len < needed) break; /* incomplete */
+            ctx->frag_len = 0;
+            if (!ctx->remote_vpad) break;
+            const WireEvent *events = (const WireEvent *)(ctx->frag_buf + 2);
+            fprintf(stderr, "[rx] %d events -> uinput\n", count);
+            uinput_write_events(ctx->remote_vpad, events, count);
+        } else {
+            ctx->frag_len = 0; /* unknown type */
         }
         break;
 
