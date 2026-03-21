@@ -3,7 +3,6 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
-#include <sys/epoll.h>
 #include <unistd.h>
 #include <linux/limits.h>
 
@@ -151,24 +150,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int epoll_fd = epoll_create1(0);
-    if (epoll_fd < 0) {
-        perror("epoll_create1");
-        goto cleanup;
-    }
-    struct epoll_event ev;
-    ev.events  = EPOLLIN;
-    ev.data.fd = local.fd;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, local.fd, &ev);
-
     fprintf(stderr, "[main] running — Ctrl-C to stop\n");
 
     while (running) {
-        lws_service(lws_ctx, 0);
-
-        struct epoll_event ready;
-        if (epoll_wait(epoll_fd, &ready, 1, 5) > 0)
-            evdev_read_all(&local);
+        evdev_read_all(&local);
 
         if (local.dirty && ctx.connected) {
             local.dirty    = false;
@@ -193,10 +178,10 @@ int main(int argc, char **argv)
             ctx.reconnect_after = 0;
             net_do_connect(lws_ctx, &ctx);
         }
+
+        lws_service(lws_ctx, 1);
     }
 
-    close(epoll_fd);
-cleanup:
     lws_context_destroy(lws_ctx);
     uinput_destroy(&remote_vpad);
     evdev_close(&local);

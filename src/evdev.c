@@ -42,42 +42,67 @@ static bool fd_is_gamepad(int fd)
     return false;
 }
 
+/* Try by-id first (udev symlinks ending in -event-joystick are authoritative),
+ * then fall back to a numerically sorted capability scan of /dev/input/event*. */
 const char *evdev_find_gamepad(char *buf, size_t bufsz)
 {
-    DIR *d = opendir("/dev/input");
-    if (!d) {
-        perror("opendir /dev/input");
-        return NULL;
+    char name[256];
+
+    /* Primary: by-id entries ending in -event-joystick */
+    DIR *d = opendir("/dev/input/by-id");
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL) {
+            size_t len = strlen(ent->d_name);
+            if (len < 16 || strcmp(ent->d_name + len - 15, "-event-joystick") != 0)
+                continue;
+            snprintf(buf, bufsz, "/dev/input/by-id/%s", ent->d_name);
+            int fd = open(buf, O_RDONLY | O_NONBLOCK);
+            if (fd < 0) continue;
+            name[0] = '\0';
+            ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+            close(fd);
+            closedir(d);
+            fprintf(stderr, "[evdev] found gamepad: %s (%s)\n", buf, name);
+            return buf;
+        }
+        closedir(d);
     }
 
-    char name[256];
+    /* Fallback: scan /dev/input/event* sorted numerically */
+    d = opendir("/dev/input");
+    if (!d) { perror("opendir /dev/input"); return NULL; }
+
+    /* Collect event numbers */
+    int nums[256];
+    int count = 0;
     struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strncmp(ent->d_name, "event", 5) != 0)
-            continue;
+    while ((ent = readdir(d)) != NULL && count < 256) {
+        if (strncmp(ent->d_name, "event", 5) == 0)
+            nums[count++] = atoi(ent->d_name + 5);
+    }
+    closedir(d);
 
-        snprintf(buf, bufsz, "/dev/input/%s", ent->d_name);
+    /* Sort numerically */
+    for (int i = 0; i < count - 1; i++)
+        for (int j = i + 1; j < count; j++)
+            if (nums[j] < nums[i]) { int t = nums[i]; nums[i] = nums[j]; nums[j] = t; }
+
+    for (int i = 0; i < count; i++) {
+        snprintf(buf, bufsz, "/dev/input/event%d", nums[i]);
         int fd = open(buf, O_RDONLY | O_NONBLOCK);
-        if (fd < 0)
-            continue;
-
+        if (fd < 0) continue;
         bool is_gp = fd_is_gamepad(fd);
-
         if (is_gp) {
             name[0] = '\0';
             ioctl(fd, EVIOCGNAME(sizeof(name)), name);
             fprintf(stderr, "[evdev] found gamepad: %s (%s)\n", buf, name);
         }
-
         close(fd);
-        if (is_gp) {
-            closedir(d);
-            return buf;
-        }
+        if (is_gp) return buf;
     }
 
-    closedir(d);
-    fprintf(stderr, "[evdev] no gamepad found in /dev/input/event*\n");
+    fprintf(stderr, "[evdev] no gamepad found\n");
     return NULL;
 }
 
