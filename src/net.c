@@ -5,6 +5,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/socket.h>
+
+/* SO_BUSY_POLL may not be visible under strict POSIX headers; value is stable since Linux 3.11 */
+#ifndef SO_BUSY_POLL
+#define SO_BUSY_POLL 46
+#endif
 
 /* ── LWS callback ────────────────────────────────────────────────────────── */
 
@@ -17,7 +23,7 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
     switch (reason) {
 
     case LWS_CALLBACK_ESTABLISHED:
-    case LWS_CALLBACK_CLIENT_ESTABLISHED:
+    case LWS_CALLBACK_CLIENT_ESTABLISHED: {
         ctx->wsi            = wsi;
         ctx->connected      = true;
         ctx->want_send_desc = true;
@@ -27,8 +33,15 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             free(ctx->remote_vpad);
             ctx->remote_vpad = NULL;
         }
+        /* SO_BUSY_POLL: spin-poll the NIC for up to 50μs before sleeping,
+         * eliminating interrupt/context-switch latency for small packets */
+        int busy = 50;
+        int fd = lws_get_socket_fd(wsi);
+        if (fd >= 0)
+            setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &busy, sizeof(busy));
         lws_callback_on_writable(wsi);
         break;
+    }
 
     case LWS_CALLBACK_SERVER_WRITEABLE:
     case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -37,17 +50,26 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             memcpy(buf + LWS_PRE, &ctx->local_desc, sizeof(DeviceMsg));
             lws_write(wsi, buf + LWS_PRE, sizeof(DeviceMsg), LWS_WRITE_BINARY);
             ctx->want_send_desc = false;
-            if (ctx->pending_n > 0)
+            pthread_mutex_lock(&ctx->pending_mutex);
+            int requeue = ctx->pending_n > 0;
+            pthread_mutex_unlock(&ctx->pending_mutex);
+            if (requeue)
                 lws_callback_on_writable(wsi);
-        } else if (ctx->pending_n > 0) {
-            size_t sz = 2 + (size_t)ctx->pending_n * sizeof(WireEvent);
-            unsigned char buf[LWS_PRE + 2 + MAX_BATCH * sizeof(WireEvent)];
-            buf[LWS_PRE]     = MSG_EVENTS;
-            buf[LWS_PRE + 1] = (unsigned char)ctx->pending_n;
-            memcpy(buf + LWS_PRE + 2, ctx->pending,
-                   (size_t)ctx->pending_n * sizeof(WireEvent));
-            lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
+        } else {
+            pthread_mutex_lock(&ctx->pending_mutex);
+            int n = ctx->pending_n;
+            WireEvent events[MAX_BATCH];
+            if (n > 0) memcpy(events, ctx->pending, (size_t)n * sizeof(WireEvent));
             ctx->pending_n = 0;
+            pthread_mutex_unlock(&ctx->pending_mutex);
+            if (n > 0) {
+                size_t sz = 2 + (size_t)n * sizeof(WireEvent);
+                unsigned char buf[LWS_PRE + 2 + MAX_BATCH * sizeof(WireEvent)];
+                buf[LWS_PRE]     = MSG_EVENTS;
+                buf[LWS_PRE + 1] = (unsigned char)n;
+                memcpy(buf + LWS_PRE + 2, events, (size_t)n * sizeof(WireEvent));
+                lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
+            }
         }
         break;
 

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include <pthread.h>
 #include <libwebsockets.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
@@ -50,21 +51,22 @@ typedef struct UinputDev UinputDev;
 typedef enum { MODE_SERVER, MODE_CLIENT } AppMode;
 
 typedef struct {
-    int           evdev_fd;
-    DeviceMsg     local_desc;        /* our gamepad's capabilities */
-    UinputDev    *remote_vpad;       /* created once we receive remote's DeviceMsg */
-    struct lws   *wsi;
-    bool          connected;
-    bool          want_send_desc;    /* send DeviceMsg on next writable */
-    WireEvent     pending[MAX_BATCH];
-    int           pending_n;
-    AppMode       mode;
-    char          host[256];
-    int           port;
-    time_t        reconnect_after;
+    int             evdev_fd;
+    pthread_mutex_t pending_mutex;   /* guards pending[] and pending_n */
+    DeviceMsg       local_desc;      /* our gamepad's capabilities */
+    UinputDev      *remote_vpad;     /* created once we receive remote's DeviceMsg */
+    struct lws     *wsi;
+    bool            connected;
+    bool            want_send_desc;  /* send DeviceMsg on next writable */
+    WireEvent       pending[MAX_BATCH];
+    int             pending_n;
+    AppMode         mode;
+    char            host[256];
+    int             port;
+    time_t          reconnect_after;
     /* fragment reassembly — LWS may deliver large messages in chunks */
-    uint8_t       frag_buf[sizeof(DeviceMsg)];
-    size_t        frag_len;
+    uint8_t         frag_buf[sizeof(DeviceMsg)];
+    size_t          frag_len;
 } AppCtx;
 
 /* ── Network functions ───────────────────────────────────────────────────── */

@@ -5,6 +5,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <poll.h>
 #include <linux/limits.h>
 
 #include "evdev.h"
@@ -16,14 +17,40 @@
 static volatile sig_atomic_t running = 1;
 static void handle_signal(int sig) { (void)sig; running = 0; }
 
-/* Watchdog: wakes up lws_service() every 1ms so evdev is read promptly */
-static void *lws_watchdog(void *arg)
+typedef struct {
+    AppCtx             *ctx;
+    struct lws_context *lws_ctx;
+} EvdevThreadArg;
+
+/* Dedicated evdev reader: wakes immediately on input via poll(), then signals
+ * the LWS thread via lws_cancel_service() — no nanosleep jitter. */
+static void *evdev_thread(void *arg)
 {
-    struct lws_context *lws_ctx = arg;
-    struct timespec ts = { .tv_nsec = 1000000 }; /* 1ms */
+    EvdevThreadArg *ta  = arg;
+    AppCtx         *ctx = ta->ctx;
+    struct pollfd   pfd = { .fd = ctx->evdev_fd, .events = POLLIN };
+    WireEvent       tmp[MAX_BATCH];
+
     while (running) {
-        nanosleep(&ts, NULL);
-        lws_cancel_service(lws_ctx);
+        if (poll(&pfd, 1, 10) <= 0)   /* wake on input or 10ms timeout */
+            continue;
+
+        /* Drain the full kernel ring buffer; if we got MAX_BATCH there may be
+         * more — keep reading until EAGAIN, always keeping the freshest batch */
+        pthread_mutex_lock(&ctx->pending_mutex);
+        int n;
+        do {
+            n = evdev_read_batch(ctx->evdev_fd, tmp, MAX_BATCH);
+            if (n > 0) {
+                memcpy(ctx->pending, tmp, (size_t)n * sizeof(WireEvent));
+                ctx->pending_n = n;
+            }
+        } while (n == MAX_BATCH);
+        int has = ctx->pending_n > 0;
+        pthread_mutex_unlock(&ctx->pending_mutex);
+
+        if (has && ctx->connected)
+            lws_cancel_service(ta->lws_ctx);   /* thread-safe wakeup */
     }
     return NULL;
 }
@@ -121,14 +148,18 @@ int main(int argc, char **argv)
     AppCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.mode = mode;
+    pthread_mutex_init(&ctx.pending_mutex, NULL);
 
     ctx.evdev_fd = evdev_open(device_path, &ctx.local_desc);
-    if (ctx.evdev_fd < 0)
+    if (ctx.evdev_fd < 0) {
+        pthread_mutex_destroy(&ctx.pending_mutex);
         return 1;
+    }
 
     if (test_evdev) {
         run_test_evdev(ctx.evdev_fd);
         evdev_close(ctx.evdev_fd);
+        pthread_mutex_destroy(&ctx.pending_mutex);
         return 0;
     }
 
@@ -142,21 +173,24 @@ int main(int argc, char **argv)
     }
     if (!lws_ctx) {
         evdev_close(ctx.evdev_fd);
+        pthread_mutex_destroy(&ctx.pending_mutex);
         return 1;
     }
 
-    pthread_t watchdog;
-    pthread_create(&watchdog, NULL, lws_watchdog, lws_ctx);
+    EvdevThreadArg ta = { .ctx = &ctx, .lws_ctx = lws_ctx };
+    pthread_t evdev_tid;
+    pthread_create(&evdev_tid, NULL, evdev_thread, &ta);
 
     while (running) {
-        lws_service(lws_ctx, 5);
+        /* Blocks until I/O or 50ms fallback; evdev_thread wakes us immediately
+         * via lws_cancel_service() whenever new input arrives */
+        lws_service(lws_ctx, 50);
 
-        int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
-        if (n > 0) {
-            ctx.pending_n = n;
-            if (ctx.connected)
-                lws_callback_on_writable(ctx.wsi);
-        }
+        pthread_mutex_lock(&ctx.pending_mutex);
+        int has = ctx.pending_n > 0 && ctx.connected;
+        pthread_mutex_unlock(&ctx.pending_mutex);
+        if (has)
+            lws_callback_on_writable(ctx.wsi);
 
         if (!ctx.connected && mode == MODE_CLIENT &&
             ctx.reconnect_after != 0 && time(NULL) >= ctx.reconnect_after) {
@@ -165,7 +199,7 @@ int main(int argc, char **argv)
         }
     }
 
-    pthread_join(watchdog, NULL);
+    pthread_join(evdev_tid, NULL);
 
     lws_context_destroy(lws_ctx);
     if (ctx.remote_vpad) {
@@ -173,5 +207,6 @@ int main(int argc, char **argv)
         free(ctx.remote_vpad);
     }
     evdev_close(ctx.evdev_fd);
+    pthread_mutex_destroy(&ctx.pending_mutex);
     return 0;
 }
