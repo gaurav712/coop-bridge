@@ -137,9 +137,6 @@ int main(int argc, char **argv)
     fprintf(stderr, "[main] running — Ctrl-C to stop\n");
 
     while (running) {
-        /* Non-blocking LWS tick — process any pending socket events */
-        lws_service(lws_ctx, 0);
-
         /* Read physical gamepad events */
         int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
         if (n > 0) {
@@ -147,9 +144,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "[evdev] %d events, connected=%d\n", n, ctx.connected);
             if (ctx.connected)
                 lws_callback_on_writable(ctx.wsi);
-            /* Flush immediately */
-            lws_service(lws_ctx, 0);
         }
+
+        lws_service(lws_ctx, 1);
 
         /* Client reconnect */
         if (!ctx.connected && mode == MODE_CLIENT &&
@@ -157,10 +154,6 @@ int main(int argc, char **argv)
             ctx.reconnect_after = 0;
             net_do_connect(lws_ctx, &ctx);
         }
-
-        /* 1ms sleep — paces the loop without blocking LWS or evdev */
-        struct timespec ts = { .tv_nsec = 1000000 };
-        nanosleep(&ts, NULL);
     }
 
     lws_context_destroy(lws_ctx);
