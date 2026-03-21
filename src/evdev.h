@@ -15,6 +15,9 @@ typedef struct EvdevState {
     /* physical axis ranges (from EVIOCGABS at open time) */
     struct input_absinfo ai_lx, ai_ly, ai_rx, ai_ry;
     struct input_absinfo ai_lt, ai_rt;
+    /* DS4-style layout: ABS_Z/ABS_RZ = right stick, ABS_RX/ABS_RY = triggers
+     * Xbox-style layout: ABS_RX/ABS_RY = right stick, ABS_Z/ABS_RZ = triggers */
+    bool ds4_axes;
 } EvdevState;
 
 /*

@@ -168,7 +168,10 @@ int main(int argc, char **argv)
         }
 
         if (ctx.recv_new) {
-            uinput_write_packet(&remote_vpad, &ctx.recv_buf);
+            if (memcmp(&ctx.recv_buf, &ctx.last_injected, sizeof(GamepadPacket)) != 0) {
+                uinput_write_packet(&remote_vpad, &ctx.recv_buf);
+                ctx.last_injected = ctx.recv_buf;
+            }
             ctx.recv_new = false;
         }
 

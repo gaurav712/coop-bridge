@@ -156,12 +156,28 @@ int evdev_open(EvdevState *s, const char *path)
         return -1;
     }
 
-    query_abs(s->fd, ABS_X,   &s->ai_lx);
-    query_abs(s->fd, ABS_Y,   &s->ai_ly);
-    query_abs(s->fd, ABS_RX,  &s->ai_rx);
-    query_abs(s->fd, ABS_RY,  &s->ai_ry);
-    query_abs(s->fd, ABS_Z,   &s->ai_lt);
-    query_abs(s->fd, ABS_RZ,  &s->ai_rt);
+    query_abs(s->fd, ABS_X, &s->ai_lx);
+    query_abs(s->fd, ABS_Y, &s->ai_ly);
+
+    /* Detect axis layout by probing ABS_RX range.
+     * Xbox: ABS_RX is right stick X (-32768..32767, range > 1000)
+     * DS4:  ABS_RX is left trigger  (0..255, range <= 255) */
+    struct input_absinfo probe;
+    query_abs(s->fd, ABS_RX, &probe);
+    s->ds4_axes = ((probe.maximum - probe.minimum) <= 255);
+
+    if (s->ds4_axes) {
+        fprintf(stderr, "[evdev] DS4-style axes detected (ABS_Z/RZ=right stick, ABS_RX/RY=triggers)\n");
+        query_abs(s->fd, ABS_Z,  &s->ai_rx);
+        query_abs(s->fd, ABS_RZ, &s->ai_ry);
+        query_abs(s->fd, ABS_RX, &s->ai_lt);
+        query_abs(s->fd, ABS_RY, &s->ai_rt);
+    } else {
+        query_abs(s->fd, ABS_RX, &s->ai_rx);
+        query_abs(s->fd, ABS_RY, &s->ai_ry);
+        query_abs(s->fd, ABS_Z,  &s->ai_lt);
+        query_abs(s->fd, ABS_RZ, &s->ai_rt);
+    }
 
     return 0;
 }
@@ -194,20 +210,36 @@ void evdev_read_all(EvdevState *s)
                     s->ai_ly.minimum, s->ai_ly.maximum, -32768, 32767);
                 break;
             case ABS_RX:
-                s->rx = normalise(ev.value,
-                    s->ai_rx.minimum, s->ai_rx.maximum, -32768, 32767);
+                if (s->ds4_axes)
+                    s->lt = (uint8_t)normalise(ev.value,
+                        s->ai_lt.minimum, s->ai_lt.maximum, 0, 255);
+                else
+                    s->rx = normalise(ev.value,
+                        s->ai_rx.minimum, s->ai_rx.maximum, -32768, 32767);
                 break;
             case ABS_RY:
-                s->ry = normalise(ev.value,
-                    s->ai_ry.minimum, s->ai_ry.maximum, -32768, 32767);
+                if (s->ds4_axes)
+                    s->rt = (uint8_t)normalise(ev.value,
+                        s->ai_rt.minimum, s->ai_rt.maximum, 0, 255);
+                else
+                    s->ry = normalise(ev.value,
+                        s->ai_ry.minimum, s->ai_ry.maximum, -32768, 32767);
                 break;
             case ABS_Z:
-                s->lt = (uint8_t)normalise(ev.value,
-                    s->ai_lt.minimum, s->ai_lt.maximum, 0, 255);
+                if (s->ds4_axes)
+                    s->rx = normalise(ev.value,
+                        s->ai_rx.minimum, s->ai_rx.maximum, -32768, 32767);
+                else
+                    s->lt = (uint8_t)normalise(ev.value,
+                        s->ai_lt.minimum, s->ai_lt.maximum, 0, 255);
                 break;
             case ABS_RZ:
-                s->rt = (uint8_t)normalise(ev.value,
-                    s->ai_rt.minimum, s->ai_rt.maximum, 0, 255);
+                if (s->ds4_axes)
+                    s->ry = normalise(ev.value,
+                        s->ai_ry.minimum, s->ai_ry.maximum, -32768, 32767);
+                else
+                    s->rt = (uint8_t)normalise(ev.value,
+                        s->ai_rt.minimum, s->ai_rt.maximum, 0, 255);
                 break;
             case ABS_HAT0X:
                 s->buttons &= ~(BTN_MASK_DPAD_L | BTN_MASK_DPAD_R);

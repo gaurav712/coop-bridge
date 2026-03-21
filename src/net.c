@@ -39,7 +39,12 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             GamepadPacket pkt;
             evdev_pack(ctx->local, &pkt);
             memcpy(buf + LWS_PRE, &pkt, sizeof(pkt));
-            lws_write(wsi, buf + LWS_PRE, sizeof(pkt), LWS_WRITE_BINARY);
+            int n = lws_write(wsi, buf + LWS_PRE, sizeof(pkt), LWS_WRITE_BINARY);
+            if (n < 0)
+                fprintf(stderr, "[net] lws_write failed: %d\n", n);
+            else
+                fprintf(stderr, "[tx] btns=0x%04x lt=%u rt=%u lx=%d ly=%d rx=%d ry=%d\n",
+                        pkt.buttons, pkt.lt, pkt.rt, pkt.lx, pkt.ly, pkt.rx, pkt.ry);
             ctx->want_write = false;
             ctx->last_sent  = time(NULL);
         }
@@ -51,8 +56,11 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
         if (len == sizeof(GamepadPacket)) {
             memcpy(&ctx->recv_buf, in, sizeof(GamepadPacket));
             ctx->recv_new = true;
+            const GamepadPacket *p = (const GamepadPacket *)in;
+            fprintf(stderr, "[rx] btns=0x%04x lt=%u rt=%u lx=%d ly=%d rx=%d ry=%d\n",
+                    p->buttons, p->lt, p->rt, p->lx, p->ly, p->rx, p->ry);
         } else {
-            fprintf(stderr, "[net] unexpected packet length %zu (expected %zu)\n",
+            fprintf(stderr, "[rx] unexpected length %zu (expected %zu)\n",
                     len, sizeof(GamepadPacket));
         }
         break;
@@ -140,6 +148,7 @@ void net_do_connect(struct lws_context *lws_ctx, AppCtx *ctx)
     i.port      = ctx->port;
     i.path      = "/";
     i.host      = ctx->host;
+    i.origin    = ctx->host;
     i.protocol  = "coop-bridge";
 
     fprintf(stderr, "[net] connecting to %s:%d\n", ctx->host, ctx->port);

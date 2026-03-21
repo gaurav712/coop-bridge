@@ -26,12 +26,12 @@ static const uint16_t BTN_CODES[] = {
 typedef struct { uint16_t code; int32_t min; int32_t max; int32_t fuzz; int32_t flat; } AxisDef;
 
 static const AxisDef AXES[] = {
-    { ABS_X,      -32768, 32767, 16,  128 },
-    { ABS_Y,      -32768, 32767, 16,  128 },
-    { ABS_RX,     -32768, 32767, 16,  128 },
-    { ABS_RY,     -32768, 32767, 16,  128 },
-    { ABS_Z,      0,      255,   0,   0   },  /* LT */
-    { ABS_RZ,     0,      255,   0,   0   },  /* RT */
+    { ABS_X,      -32768, 32767, 16,  0 },
+    { ABS_Y,      -32768, 32767, 16,  0 },
+    { ABS_RX,     -32768, 32767, 16,  0 },
+    { ABS_RY,     -32768, 32767, 16,  0 },
+    { ABS_Z,      0,      255,   0,   0 },  /* LT */
+    { ABS_RZ,     0,      255,   0,   0 },  /* RT */
     { ABS_HAT0X,  -1,     1,     0,   0   },  /* d-pad H */
     { ABS_HAT0Y,  -1,     1,     0,   0   },  /* d-pad V */
 };

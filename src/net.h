@@ -51,6 +51,7 @@ typedef struct {
     bool           connected;
     GamepadPacket  recv_buf;
     bool           recv_new;
+    GamepadPacket  last_injected;   /* last state written to uinput, to skip duplicates */
     time_t         last_sent;
     time_t         reconnect_after;
     /* client connection info (kept for reconnect) */
