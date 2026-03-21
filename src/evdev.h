@@ -1,38 +1,16 @@
 #pragma once
 
-#include <stdint.h>
 #include <stdbool.h>
-#include <linux/input.h>
+#include <linux/limits.h>
+#include "net.h"
 
-#include "net.h"  /* GamepadPacket, ButtonMask */
-
-typedef struct EvdevState {
-    int      fd;
-    uint16_t buttons;
-    uint8_t  lt, rt;
-    int16_t  lx, ly, rx, ry;
-    bool     dirty;
-    /* physical axis ranges (from EVIOCGABS at open time) */
-    struct input_absinfo ai_lx, ai_ly, ai_rx, ai_ry;
-    struct input_absinfo ai_lt, ai_rt;
-    /* DS4-style layout: ABS_Z/ABS_RZ = right stick, ABS_RX/ABS_RY = triggers
-     * Xbox-style layout: ABS_RX/ABS_RY = right stick, ABS_Z/ABS_RZ = triggers */
-    bool ds4_axes;
-} EvdevState;
-
-/*
- * Scan /dev/input/event* and return the path of the first gamepad found.
- * Writes into buf (size >= PATH_MAX). Returns buf on success, NULL if none found.
- */
+/* Scan /dev/input/ and return path of first gamepad. buf must be PATH_MAX. */
 const char *evdev_find_gamepad(char *buf, size_t bufsz);
 
-/* Open the evdev device at path. Returns 0 on success, -1 on error. */
-int  evdev_open(EvdevState *s, const char *path);
+/* Open device, fill desc with its capabilities. Returns fd >= 0 or -1. */
+int evdev_open(const char *path, DeviceMsg *desc);
 
-/* Drain all pending events into s. Sets s->dirty if anything changed. */
-void evdev_read_all(EvdevState *s);
+/* Read pending events into out[]. Returns count (0 if none). */
+int evdev_read_batch(int fd, WireEvent *out, int max);
 
-/* Pack current state into a wire packet. Clears s->dirty. */
-void evdev_pack(const EvdevState *s, GamepadPacket *pkt);
-
-void evdev_close(EvdevState *s);
+void evdev_close(int fd);

@@ -1,15 +1,15 @@
 #pragma once
 
-#include "net.h"  /* GamepadPacket */
+#include "net.h"
 
 typedef struct UinputDev {
     int fd;
 } UinputDev;
 
-/* Create the virtual gamepad. Returns 0 on success, -1 on error. */
-int  uinput_create(UinputDev *dev);
+/* Create a virtual device that mirrors the remote's physical gamepad. */
+int  uinput_create(UinputDev *dev, const DeviceMsg *desc);
 
-/* Inject a full gamepad state update. */
-void uinput_write_packet(UinputDev *dev, const GamepadPacket *pkt);
+/* Write a batch of raw events to the virtual device. */
+void uinput_write_events(UinputDev *dev, const WireEvent *events, int count);
 
 void uinput_destroy(UinputDev *dev);

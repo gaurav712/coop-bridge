@@ -1,71 +1,89 @@
 #include "net.h"
-#include "evdev.h"
+#include "uinput.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 
-/* ── LWS protocol callback ────────────────────────────────────────────────── */
+/* ── LWS callback ────────────────────────────────────────────────────────── */
 
 static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
                             void *user, void *in, size_t len)
 {
     (void)user;
-    struct lws_context *lws_ctx = lws_get_context(wsi);
-    AppCtx *ctx = lws_context_user(lws_ctx);
+    AppCtx *ctx = lws_context_user(lws_get_context(wsi));
 
     switch (reason) {
-    /* ── Server: new peer connected ──────────────────────────────────────── */
+
     case LWS_CALLBACK_ESTABLISHED:
-        ctx->wsi       = wsi;
-        ctx->connected = true;
-        fprintf(stderr, "[net] client connected\n");
-        lws_callback_on_writable(wsi);
-        break;
-
-    /* ── Client: connected to server ─────────────────────────────────────── */
     case LWS_CALLBACK_CLIENT_ESTABLISHED:
-        ctx->wsi       = wsi;
-        ctx->connected = true;
-        fprintf(stderr, "[net] connected to server\n");
+        ctx->wsi            = wsi;
+        ctx->connected      = true;
+        ctx->want_send_desc = true;
+        /* destroy any leftover virtual device from a previous session */
+        if (ctx->remote_vpad) {
+            uinput_destroy(ctx->remote_vpad);
+            free(ctx->remote_vpad);
+            ctx->remote_vpad = NULL;
+        }
+        fprintf(stderr, "[net] %s\n",
+                reason == LWS_CALLBACK_ESTABLISHED ? "client connected" : "connected to server");
         lws_callback_on_writable(wsi);
         break;
 
-    /* ── Send path ───────────────────────────────────────────────────────── */
     case LWS_CALLBACK_SERVER_WRITEABLE:
     case LWS_CALLBACK_CLIENT_WRITEABLE:
-        if (ctx->want_write && ctx->connected) {
-            unsigned char buf[LWS_PRE + sizeof(GamepadPacket)];
-            GamepadPacket pkt;
-            evdev_pack(ctx->local, &pkt);
-            memcpy(buf + LWS_PRE, &pkt, sizeof(pkt));
-            int n = lws_write(wsi, buf + LWS_PRE, sizeof(pkt), LWS_WRITE_BINARY);
+        if (ctx->want_send_desc) {
+            /* First message: describe our physical gamepad */
+            unsigned char buf[LWS_PRE + sizeof(DeviceMsg)];
+            memcpy(buf + LWS_PRE, &ctx->local_desc, sizeof(DeviceMsg));
+            int n = lws_write(wsi, buf + LWS_PRE, sizeof(DeviceMsg), LWS_WRITE_BINARY);
             if (n < 0)
-                fprintf(stderr, "[net] lws_write failed: %d\n", n);
+                fprintf(stderr, "[net] lws_write (device msg) failed: %d\n", n);
             else
-                fprintf(stderr, "[tx] btns=0x%04x lt=%u rt=%u lx=%d ly=%d rx=%d ry=%d\n",
-                        pkt.buttons, pkt.lt, pkt.rt, pkt.lx, pkt.ly, pkt.rx, pkt.ry);
-            ctx->want_write = false;
-            ctx->last_sent  = time(NULL);
+                fprintf(stderr, "[net] sent device description: %s\n", ctx->local_desc.name);
+            ctx->want_send_desc = false;
+        } else if (ctx->pending_n > 0) {
+            /* Subsequent messages: event batch */
+            size_t sz = 2 + (size_t)ctx->pending_n * sizeof(WireEvent);
+            unsigned char buf[LWS_PRE + 2 + MAX_BATCH * sizeof(WireEvent)];
+            buf[LWS_PRE]     = MSG_EVENTS;
+            buf[LWS_PRE + 1] = (unsigned char)ctx->pending_n;
+            memcpy(buf + LWS_PRE + 2, ctx->pending,
+                   (size_t)ctx->pending_n * sizeof(WireEvent));
+            lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
+            ctx->pending_n = 0;
         }
         break;
 
-    /* ── Receive path ────────────────────────────────────────────────────── */
     case LWS_CALLBACK_RECEIVE:
     case LWS_CALLBACK_CLIENT_RECEIVE:
-        if (len == sizeof(GamepadPacket)) {
-            memcpy(&ctx->recv_buf, in, sizeof(GamepadPacket));
-            ctx->recv_new = true;
-            const GamepadPacket *p = (const GamepadPacket *)in;
-            fprintf(stderr, "[rx] btns=0x%04x lt=%u rt=%u lx=%d ly=%d rx=%d ry=%d\n",
-                    p->buttons, p->lt, p->rt, p->lx, p->ly, p->rx, p->ry);
-        } else {
-            fprintf(stderr, "[rx] unexpected length %zu (expected %zu)\n",
-                    len, sizeof(GamepadPacket));
+        if (len < 1) break;
+        if (((uint8_t *)in)[0] == MSG_DEVICE) {
+            if (len != sizeof(DeviceMsg)) {
+                fprintf(stderr, "[net] bad device msg len %zu (expected %zu)\n",
+                        len, sizeof(DeviceMsg));
+                break;
+            }
+            DeviceMsg *desc = (DeviceMsg *)in;
+            fprintf(stderr, "[net] received device description: %s\n", desc->name);
+            UinputDev *vpad = malloc(sizeof(UinputDev));
+            if (uinput_create(vpad, desc) < 0) {
+                free(vpad);
+            } else {
+                ctx->remote_vpad = vpad;
+            }
+        } else if (((uint8_t *)in)[0] == MSG_EVENTS) {
+            if (len < 2 || !ctx->remote_vpad) break;
+            int count = ((uint8_t *)in)[1];
+            if (count < 1 || count > MAX_BATCH) break;
+            if ((size_t)count * sizeof(WireEvent) + 2 > len) break;
+            const WireEvent *events = (const WireEvent *)((uint8_t *)in + 2);
+            uinput_write_events(ctx->remote_vpad, events, count);
         }
         break;
 
-    /* ── Connection lost ─────────────────────────────────────────────────── */
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
         fprintf(stderr, "[net] connection error: %s\n",
                 in ? (const char *)in : "(unknown)");
@@ -91,7 +109,7 @@ static struct lws_protocols protocols[] = {
         .name                  = "coop-bridge",
         .callback              = callback_gamepad,
         .per_session_data_size = 0,
-        .rx_buffer_size        = sizeof(GamepadPacket) * 4,
+        .rx_buffer_size        = sizeof(DeviceMsg) + 64,
     },
     LWS_PROTOCOL_LIST_TERM
 };
@@ -105,7 +123,6 @@ struct lws_context *net_create_server(int port, AppCtx *ctx)
     info.port      = port;
     info.protocols = protocols;
     info.user      = ctx;
-    /* Suppress verbose LWS logs; set to LLL_USER|LLL_ERR|LLL_WARN for more */
     lws_set_log_level(LLL_ERR | LLL_WARN, NULL);
 
     struct lws_context *lws_ctx = lws_create_context(&info);
@@ -131,7 +148,6 @@ struct lws_context *net_create_client(const char *host, int port, AppCtx *ctx)
         return NULL;
     }
 
-    /* Store for reconnect */
     strncpy(ctx->host, host, sizeof(ctx->host) - 1);
     ctx->port = port;
 
@@ -141,15 +157,19 @@ struct lws_context *net_create_client(const char *host, int port, AppCtx *ctx)
 
 void net_do_connect(struct lws_context *lws_ctx, AppCtx *ctx)
 {
+    /* Use a local copy so LWS cannot corrupt ctx->host */
+    char addr[256];
+    memcpy(addr, ctx->host, sizeof(addr));
+
     struct lws_client_connect_info i;
     memset(&i, 0, sizeof(i));
-    i.context   = lws_ctx;
-    i.address   = ctx->host;
-    i.port      = ctx->port;
-    i.path      = "/";
-    i.host      = ctx->host;
-    i.origin    = ctx->host;
-    i.protocol  = "coop-bridge";
+    i.context  = lws_ctx;
+    i.address  = addr;
+    i.port     = ctx->port;
+    i.path     = "/";
+    i.host     = addr;
+    i.origin   = addr;
+    i.protocol = "coop-bridge";
 
     fprintf(stderr, "[net] connecting to %s:%d\n", ctx->host, ctx->port);
     if (!lws_client_connect_via_info(&i))

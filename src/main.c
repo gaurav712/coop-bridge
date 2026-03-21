@@ -13,7 +13,6 @@
 #define DEFAULT_PORT 7777
 
 static volatile sig_atomic_t running = 1;
-
 static void handle_signal(int sig) { (void)sig; running = 0; }
 
 static void usage(const char *prog)
@@ -25,34 +24,41 @@ static void usage(const char *prog)
         "  %s <HOST>:<PORT>      client, custom port\n"
         "  %s --server [PORT]    server, custom port\n"
         "  %s --device PATH      override auto-detected gamepad\n"
-        "  %s --test-evdev       print gamepad events, no networking\n"
-        "\nGamepad is auto-detected from /dev/input/event*.\n",
+        "  %s --test-evdev       print raw events, no networking\n"
+        "\nGamepad is auto-detected from /dev/input/.\n",
         prog, DEFAULT_PORT, prog, DEFAULT_PORT,
         prog, prog, prog, prog);
 }
 
-/* ── --test-evdev mode ────────────────────────────────────────────────────── */
-
-static void run_test_evdev(EvdevState *s)
+static void run_test_evdev(int fd)
 {
-    fprintf(stderr, "[test-evdev] fd=%d — Ctrl-C to stop\n", s->fd);
+    fprintf(stderr, "[test-evdev] Ctrl-C to stop\n");
+    WireEvent events[MAX_BATCH];
     while (running) {
-        evdev_read_all(s);
-        if (s->dirty) {
-            GamepadPacket pkt;
-            evdev_pack(s, &pkt);
-            s->dirty = false;
-            printf("buttons=0x%04x LT=%3u RT=%3u LX=%6d LY=%6d RX=%6d RY=%6d\n",
-                   pkt.buttons, pkt.lt, pkt.rt,
-                   pkt.lx, pkt.ly, pkt.rx, pkt.ry);
-            fflush(stdout);
-        }
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000000 };
+        int n = evdev_read_batch(fd, events, MAX_BATCH);
+        for (int i = 0; i < n; i++)
+            fprintf(stderr, "  type=%u code=%u value=%d\n",
+                    events[i].type, events[i].code, events[i].value);
+        struct timespec ts = { .tv_nsec = 1000000 };
         nanosleep(&ts, NULL);
     }
 }
 
-/* ── Main ─────────────────────────────────────────────────────────────────── */
+/* Parse "HOST" or "HOST:PORT" into host/port. host buf must be 256 bytes. */
+static void parse_hostport(const char *arg, char *host, int *port)
+{
+    const char *colon = strrchr(arg, ':');
+    if (colon) {
+        size_t hlen = (size_t)(colon - arg);
+        if (hlen >= 256) hlen = 255;
+        memcpy(host, arg, hlen);
+        host[hlen] = '\0';
+        *port = atoi(colon + 1);
+    } else {
+        strncpy(host, arg, 255);
+        host[255] = '\0';
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -63,7 +69,6 @@ int main(int argc, char **argv)
     AppMode     mode      = MODE_SERVER;
     int         test_evdev = 0;
 
-    /* Parse arguments */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage(argv[0]);
@@ -77,19 +82,8 @@ int main(int argc, char **argv)
             if (i + 1 < argc && argv[i+1][0] != '-')
                 port = atoi(argv[++i]);
         } else if (argv[i][0] != '-') {
-            /* Bare positional argument: treat as HOST or HOST:PORT */
             mode = MODE_CLIENT;
-            const char *arg = argv[i];
-            const char *colon = strrchr(arg, ':');
-            if (colon) {
-                size_t hlen = (size_t)(colon - arg);
-                if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
-                memcpy(host, arg, hlen);
-                host[hlen] = '\0';
-                port = atoi(colon + 1);
-            } else {
-                strncpy(host, arg, sizeof(host) - 1);
-            }
+            parse_hostport(argv[i], host, &port);
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             usage(argv[0]);
@@ -103,7 +97,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Auto-detect gamepad if not overridden */
     if (!device_path) {
         if (!evdev_find_gamepad(auto_path, sizeof(auto_path)))
             return 1;
@@ -113,67 +106,46 @@ int main(int argc, char **argv)
     signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
 
-    EvdevState local;
-    if (evdev_open(&local, device_path) < 0)
-        return 1;
-    fprintf(stderr, "[main] gamepad: %s\n", device_path);
-
-    if (test_evdev) {
-        run_test_evdev(&local);
-        evdev_close(&local);
-        return 0;
-    }
-
-    UinputDev remote_vpad;
-    if (uinput_create(&remote_vpad) < 0) {
-        evdev_close(&local);
-        return 1;
-    }
-    fprintf(stderr, "[main] virtual gamepad created\n");
-
     AppCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.local       = &local;
-    ctx.remote_vpad = &remote_vpad;
-    ctx.mode        = mode;
+    ctx.mode = mode;
+
+    ctx.evdev_fd = evdev_open(device_path, &ctx.local_desc);
+    if (ctx.evdev_fd < 0)
+        return 1;
+    fprintf(stderr, "[main] gamepad: %s (%s)\n", device_path, ctx.local_desc.name);
+
+    if (test_evdev) {
+        run_test_evdev(ctx.evdev_fd);
+        evdev_close(ctx.evdev_fd);
+        return 0;
+    }
 
     struct lws_context *lws_ctx = NULL;
     if (mode == MODE_SERVER) {
         lws_ctx = net_create_server(port, &ctx);
     } else {
+        memcpy(ctx.host, host, sizeof(ctx.host));
+        ctx.port = port;
         lws_ctx = net_create_client(host, port, &ctx);
     }
-
     if (!lws_ctx) {
-        uinput_destroy(&remote_vpad);
-        evdev_close(&local);
+        evdev_close(ctx.evdev_fd);
         return 1;
     }
 
     fprintf(stderr, "[main] running — Ctrl-C to stop\n");
 
     while (running) {
-        evdev_read_all(&local);
-
-        if (local.dirty && ctx.connected) {
-            local.dirty    = false;
-            ctx.want_write = true;
-            lws_callback_on_writable(ctx.wsi);
+        /* Read physical gamepad events */
+        int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
+        if (n > 0) {
+            ctx.pending_n = n;
+            if (ctx.connected)
+                lws_callback_on_writable(ctx.wsi);
         }
 
-        /* 1Hz keepalive */
-        if (ctx.connected && (time(NULL) - ctx.last_sent) > 1) {
-            ctx.want_write = true;
-            lws_callback_on_writable(ctx.wsi);
-        }
-
-        if (ctx.recv_new) {
-            if (memcmp(&ctx.recv_buf, &ctx.last_injected, sizeof(GamepadPacket)) != 0) {
-                uinput_write_packet(&remote_vpad, &ctx.recv_buf);
-                ctx.last_injected = ctx.recv_buf;
-            }
-            ctx.recv_new = false;
-        }
+        lws_service(lws_ctx, 1);
 
         /* Client reconnect */
         if (!ctx.connected && mode == MODE_CLIENT &&
@@ -181,13 +153,14 @@ int main(int argc, char **argv)
             ctx.reconnect_after = 0;
             net_do_connect(lws_ctx, &ctx);
         }
-
-        lws_service(lws_ctx, 1);
     }
 
     lws_context_destroy(lws_ctx);
-    uinput_destroy(&remote_vpad);
-    evdev_close(&local);
+    if (ctx.remote_vpad) {
+        uinput_destroy(ctx.remote_vpad);
+        free(ctx.remote_vpad);
+    }
+    evdev_close(ctx.evdev_fd);
     fprintf(stderr, "[main] bye\n");
     return 0;
 }

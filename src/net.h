@@ -4,63 +4,61 @@
 #include <stdbool.h>
 #include <time.h>
 #include <libwebsockets.h>
+#include <linux/input.h>
+#include <linux/uinput.h>
 
-/* ── Wire packet ──────────────────────────────────────────────────────────── */
+/* ── Wire event (8 bytes, no timestamp) ──────────────────────────────────── */
 
 typedef struct __attribute__((packed)) {
-    uint16_t buttons;   /* bitmask, see ButtonMask */
-    uint8_t  lt;        /* left trigger  0-255 */
-    uint8_t  rt;        /* right trigger 0-255 */
-    int16_t  lx;        /* left stick X  -32768..32767 */
-    int16_t  ly;        /* left stick Y */
-    int16_t  rx;        /* right stick X */
-    int16_t  ry;        /* right stick Y */
-} GamepadPacket;        /* 12 bytes; little-endian (x86-64 assumed) */
+    uint16_t type;
+    uint16_t code;
+    int32_t  value;
+} WireEvent;
 
-typedef enum {
-    BTN_MASK_A      = (1 << 0),
-    BTN_MASK_B      = (1 << 1),
-    BTN_MASK_X      = (1 << 2),
-    BTN_MASK_Y      = (1 << 3),
-    BTN_MASK_TL     = (1 << 4),   /* LB */
-    BTN_MASK_TR     = (1 << 5),   /* RB */
-    BTN_MASK_SELECT = (1 << 6),
-    BTN_MASK_START  = (1 << 7),
-    BTN_MASK_THUMBL = (1 << 8),   /* L3 */
-    BTN_MASK_THUMBR = (1 << 9),   /* R3 */
-    BTN_MASK_DPAD_U = (1 << 10),
-    BTN_MASK_DPAD_D = (1 << 11),
-    BTN_MASK_DPAD_L = (1 << 12),
-    BTN_MASK_DPAD_R = (1 << 13),
-} ButtonMask;
+/* ── Message types ───────────────────────────────────────────────────────── */
+
+#define MSG_DEVICE  0x01   /* sent once on connect: describes the local gamepad */
+#define MSG_EVENTS  0x02   /* batch of raw input events */
+
+#define MAX_BATCH   64     /* max WireEvents per message */
+
+/* Device description — mirrors the physical device's capabilities exactly.
+ * Sent by both sides on connect; receiver creates a matching uinput device. */
+typedef struct __attribute__((packed)) {
+    uint8_t  msg_type;                  /* MSG_DEVICE */
+    char     name[UINPUT_MAX_NAME_SIZE];
+    uint16_t bustype, vendor, product, version;
+    uint8_t  key_bits[(KEY_MAX / 8) + 1];   /* 96 bytes */
+    uint8_t  abs_bits[(ABS_MAX / 8) + 1];   /*  8 bytes */
+    struct {
+        int32_t minimum, maximum, fuzz, flat, resolution;
+    } abs[ABS_CNT];                     /* 64 * 20 = 1280 bytes */
+} DeviceMsg;
 
 /* ── Forward declarations ─────────────────────────────────────────────────── */
 
-typedef struct EvdevState EvdevState;
-typedef struct UinputDev  UinputDev;
+typedef struct UinputDev UinputDev;
 
-/* ── App context (shared between main loop and LWS callbacks) ─────────────── */
+/* ── App context ─────────────────────────────────────────────────────────── */
 
 typedef enum { MODE_SERVER, MODE_CLIENT } AppMode;
 
 typedef struct {
-    EvdevState    *local;
-    UinputDev     *remote_vpad;
-    struct lws    *wsi;
-    bool           want_write;
-    bool           connected;
-    GamepadPacket  recv_buf;
-    bool           recv_new;
-    GamepadPacket  last_injected;   /* last state written to uinput, to skip duplicates */
-    time_t         last_sent;
-    time_t         reconnect_after;
-    /* client connection info (kept for reconnect) */
-    char           host[256];
-    int            port;
-    AppMode        mode;
+    int           evdev_fd;
+    DeviceMsg     local_desc;        /* our gamepad's capabilities */
+    UinputDev    *remote_vpad;       /* created once we receive remote's DeviceMsg */
+    struct lws   *wsi;
+    bool          connected;
+    bool          want_send_desc;    /* send DeviceMsg on next writable */
+    WireEvent     pending[MAX_BATCH];
+    int           pending_n;
+    AppMode       mode;
+    char          host[256];
+    int           port;
+    time_t        reconnect_after;
 } AppCtx;
 
-/* ── Network functions ────────────────────────────────────────────────────── */
+/* ── Network functions ───────────────────────────────────────────────────── */
 
 struct lws_context *net_create_server(int port, AppCtx *ctx);
 struct lws_context *net_create_client(const char *host, int port, AppCtx *ctx);
