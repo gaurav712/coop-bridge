@@ -1,3 +1,3 @@
 # coop-bridge
 
-A simple tool to pass gamepad events over websockets to fake couch co-op
+A simple tool to pass gamepad events over websockets (remotely connecting a gamepad)
