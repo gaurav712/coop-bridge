@@ -53,6 +53,7 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             buf[LWS_PRE + 1] = (unsigned char)ctx->pending_n;
             memcpy(buf + LWS_PRE + 2, ctx->pending,
                    (size_t)ctx->pending_n * sizeof(WireEvent));
+            fprintf(stderr, "[tx] %d events\n", ctx->pending_n);
             lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
             ctx->pending_n = 0;
         }
@@ -98,6 +99,7 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
                 if (count < 1 || count > MAX_BATCH) break;
                 if ((size_t)count * sizeof(WireEvent) + 2 > msg_len) break;
                 const WireEvent *events = (const WireEvent *)(msg + 2);
+                fprintf(stderr, "[rx] %d events -> uinput\n", count);
                 uinput_write_events(ctx->remote_vpad, events, count);
             }
         }

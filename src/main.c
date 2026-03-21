@@ -141,6 +141,7 @@ int main(int argc, char **argv)
         int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
         if (n > 0) {
             ctx.pending_n = n;
+            fprintf(stderr, "[evdev] %d events, connected=%d\n", n, ctx.connected);
             if (ctx.connected)
                 lws_callback_on_writable(ctx.wsi);
         }
