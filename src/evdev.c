@@ -145,7 +145,7 @@ int evdev_read_batch(int fd, WireEvent *out, int max)
         out[n].value = ev.value;
         n++;
     }
-    if (errno != EAGAIN && errno != EWOULDBLOCK && n == 0)
+    if (n == 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ENODEV)
         perror("evdev: read");
     return n;
 }

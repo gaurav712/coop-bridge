@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 \
           $(shell pkg-config --cflags libwebsockets)
-LDFLAGS = $(shell pkg-config --libs libwebsockets)
+LDFLAGS = $(shell pkg-config --libs libwebsockets) -lpthread
 
 SRCS = src/main.c src/evdev.c src/uinput.c src/net.c
 OBJS = $(SRCS:.c=.o)

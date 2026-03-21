@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <linux/limits.h>
 
 #include "evdev.h"
@@ -14,6 +15,18 @@
 
 static volatile sig_atomic_t running = 1;
 static void handle_signal(int sig) { (void)sig; running = 0; }
+
+/* Watchdog: wakes up lws_service() every 1ms so evdev is read promptly */
+static void *lws_watchdog(void *arg)
+{
+    struct lws_context *lws_ctx = arg;
+    struct timespec ts = { .tv_nsec = 1000000 }; /* 1ms */
+    while (running) {
+        nanosleep(&ts, NULL);
+        lws_cancel_service(lws_ctx);
+    }
+    return NULL;
+}
 
 static void usage(const char *prog)
 {
@@ -136,8 +149,15 @@ int main(int argc, char **argv)
 
     fprintf(stderr, "[main] running — Ctrl-C to stop\n");
 
+    pthread_t watchdog;
+    pthread_create(&watchdog, NULL, lws_watchdog, lws_ctx);
+
     while (running) {
-        /* Read physical gamepad events */
+        /* lws_service blocks until I/O or timeout; watchdog calls
+         * lws_cancel_service() every 1ms so we return promptly */
+        lws_service(lws_ctx, 5);
+
+        /* Read all pending gamepad events */
         int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
         if (n > 0) {
             ctx.pending_n = n;
@@ -146,8 +166,6 @@ int main(int argc, char **argv)
                 lws_callback_on_writable(ctx.wsi);
         }
 
-        lws_service(lws_ctx, 1);
-
         /* Client reconnect */
         if (!ctx.connected && mode == MODE_CLIENT &&
             ctx.reconnect_after != 0 && time(NULL) >= ctx.reconnect_after) {
@@ -155,6 +173,8 @@ int main(int argc, char **argv)
             net_do_connect(lws_ctx, &ctx);
         }
     }
+
+    pthread_join(watchdog, NULL);
 
     lws_context_destroy(lws_ctx);
     if (ctx.remote_vpad) {

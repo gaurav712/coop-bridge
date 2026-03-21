@@ -83,7 +83,8 @@ void uinput_write_events(UinputDev *dev, const WireEvent *events, int count)
         ev.type  = events[i].type;
         ev.code  = events[i].code;
         ev.value = events[i].value;
-        write(dev->fd, &ev, sizeof(ev));
+        if (write(dev->fd, &ev, sizeof(ev)) != (ssize_t)sizeof(ev))
+            perror("uinput: write");
     }
 }
 

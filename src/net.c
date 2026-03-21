@@ -45,6 +45,9 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             else
                 fprintf(stderr, "[net] sent device description: %s\n", ctx->local_desc.name);
             ctx->want_send_desc = false;
+            /* re-request if we already have events queued */
+            if (ctx->pending_n > 0)
+                lws_callback_on_writable(wsi);
         } else if (ctx->pending_n > 0) {
             /* Subsequent messages: event batch */
             size_t sz = 2 + (size_t)ctx->pending_n * sizeof(WireEvent);
@@ -54,7 +57,9 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             memcpy(buf + LWS_PRE + 2, ctx->pending,
                    (size_t)ctx->pending_n * sizeof(WireEvent));
             fprintf(stderr, "[tx] %d events\n", ctx->pending_n);
-            lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
+            int n = lws_write(wsi, buf + LWS_PRE, sz, LWS_WRITE_BINARY);
+            if (n < 0)
+                fprintf(stderr, "[net] lws_write (events) failed: %d\n", n);
             ctx->pending_n = 0;
         }
         break;
@@ -74,8 +79,10 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
             if (ctx->frag_len < sizeof(DeviceMsg)) break; /* incomplete */
             ctx->frag_len = 0;
             DeviceMsg *desc = (DeviceMsg *)ctx->frag_buf;
+            desc->name[sizeof(desc->name) - 1] = '\0'; /* ensure safe string */
             fprintf(stderr, "[net] received device description: %s\n", desc->name);
             UinputDev *vpad = malloc(sizeof(UinputDev));
+            if (!vpad) break;
             if (uinput_create(vpad, desc) < 0) {
                 free(vpad);
             } else {
@@ -110,6 +117,8 @@ static int callback_gamepad(struct lws *wsi, enum lws_callback_reasons reason,
         if (ctx->wsi == wsi) {
             ctx->connected       = false;
             ctx->wsi             = NULL;
+            ctx->pending_n       = 0;
+            ctx->frag_len        = 0;
             ctx->reconnect_after = time(NULL) + 3;
             fprintf(stderr, "[net] disconnected, reconnecting in 3s\n");
         }
@@ -126,7 +135,7 @@ static struct lws_protocols protocols[] = {
         .name                  = "coop-bridge",
         .callback              = callback_gamepad,
         .per_session_data_size = 0,
-        .rx_buffer_size        = sizeof(DeviceMsg) + 64,
+        .rx_buffer_size        = sizeof(DeviceMsg), /* largest message */
     },
     LWS_PROTOCOL_LIST_TERM
 };
