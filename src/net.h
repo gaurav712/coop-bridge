@@ -62,6 +62,9 @@ typedef struct {
     char          host[256];
     int           port;
     time_t        reconnect_after;
+    /* fragment reassembly — LWS may deliver large messages in chunks */
+    uint8_t       frag_buf[sizeof(DeviceMsg)];
+    size_t        frag_len;
 } AppCtx;
 
 /* ── Network functions ───────────────────────────────────────────────────── */
