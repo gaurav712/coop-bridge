@@ -16,12 +16,12 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
     }
 
     /* Enable event types that the remote device has */
-    for (int k = 0; k < KEY_MAX; k++)
+    for (int k = 0; k < WIRE_KEY_BYTES * 8; k++)
         if (desc->key_bits[k / 8] & (1 << (k % 8))) {
             ioctl(dev->fd, UI_SET_EVBIT, EV_KEY);
             break;
         }
-    for (int a = 0; a < ABS_CNT; a++)
+    for (int a = 0; a < WIRE_ABS_CNT; a++)
         if (desc->abs_bits[a / 8] & (1 << (a % 8))) {
             ioctl(dev->fd, UI_SET_EVBIT, EV_ABS);
             break;
@@ -29,12 +29,12 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
     ioctl(dev->fd, UI_SET_EVBIT, EV_SYN);
 
     /* Register each button */
-    for (int k = 0; k < KEY_MAX; k++)
+    for (int k = 0; k < WIRE_KEY_BYTES * 8; k++)
         if (desc->key_bits[k / 8] & (1 << (k % 8)))
             ioctl(dev->fd, UI_SET_KEYBIT, k);
 
     /* Register each abs axis */
-    for (int a = 0; a < ABS_CNT; a++)
+    for (int a = 0; a < WIRE_ABS_CNT; a++)
         if (desc->abs_bits[a / 8] & (1 << (a % 8)))
             ioctl(dev->fd, UI_SET_ABSBIT, a);
 
@@ -50,7 +50,7 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
     ioctl(dev->fd, UI_DEV_SETUP, &setup);
 
     /* Axis ranges */
-    for (int a = 0; a < ABS_CNT; a++) {
+    for (int a = 0; a < WIRE_ABS_CNT; a++) {
         if (!(desc->abs_bits[a / 8] & (1 << (a % 8))))
             continue;
         struct uinput_abs_setup abs;

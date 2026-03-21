@@ -22,17 +22,23 @@ typedef struct __attribute__((packed)) {
 
 #define MAX_BATCH   64     /* max WireEvents per message */
 
+/* Fixed wire-format sizes — independent of kernel header definitions.
+ * KEY_MAX varies across kernel versions; hard-coding avoids struct size
+ * mismatches between machines with different kernels. */
+#define WIRE_KEY_BYTES  96   /* covers KEY_MAX ≤ 767 (modern kernels) */
+#define WIRE_ABS_CNT    64   /* standard ABS_CNT */
+
 /* Device description — mirrors the physical device's capabilities exactly.
  * Sent by both sides on connect; receiver creates a matching uinput device. */
 typedef struct __attribute__((packed)) {
     uint8_t  msg_type;                  /* MSG_DEVICE */
     char     name[UINPUT_MAX_NAME_SIZE];
     uint16_t bustype, vendor, product, version;
-    uint8_t  key_bits[(KEY_MAX / 8) + 1];   /* 96 bytes */
-    uint8_t  abs_bits[(ABS_MAX / 8) + 1];   /*  8 bytes */
+    uint8_t  key_bits[WIRE_KEY_BYTES];         /*  96 bytes */
+    uint8_t  abs_bits[WIRE_ABS_CNT / 8];       /*   8 bytes */
     struct {
         int32_t minimum, maximum, fuzz, flat, resolution;
-    } abs[ABS_CNT];                     /* 64 * 20 = 1280 bytes */
+    } abs[WIRE_ABS_CNT];                       /* 1280 bytes */
 } DeviceMsg;
 
 /* ── Forward declarations ─────────────────────────────────────────────────── */

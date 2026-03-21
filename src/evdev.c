@@ -117,7 +117,7 @@ int evdev_open(const char *path, DeviceMsg *desc)
     ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(desc->key_bits)), desc->key_bits);
     ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(desc->abs_bits)), desc->abs_bits);
 
-    for (int a = 0; a < ABS_CNT; a++) {
+    for (int a = 0; a < WIRE_ABS_CNT; a++) {
         if (!(desc->abs_bits[a / 8] & (1 << (a % 8))))
             continue;
         struct input_absinfo ai;
