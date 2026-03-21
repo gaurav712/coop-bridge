@@ -45,12 +45,11 @@ static void usage(const char *prog)
 
 static void run_test_evdev(int fd)
 {
-    fprintf(stderr, "[test-evdev] Ctrl-C to stop\n");
     WireEvent events[MAX_BATCH];
     while (running) {
         int n = evdev_read_batch(fd, events, MAX_BATCH);
         for (int i = 0; i < n; i++)
-            fprintf(stderr, "  type=%u code=%u value=%d\n",
+            fprintf(stdout, "type=%u code=%u value=%d\n",
                     events[i].type, events[i].code, events[i].value);
         struct timespec ts = { .tv_nsec = 1000000 };
         nanosleep(&ts, NULL);
@@ -126,7 +125,6 @@ int main(int argc, char **argv)
     ctx.evdev_fd = evdev_open(device_path, &ctx.local_desc);
     if (ctx.evdev_fd < 0)
         return 1;
-    fprintf(stderr, "[main] gamepad: %s (%s)\n", device_path, ctx.local_desc.name);
 
     if (test_evdev) {
         run_test_evdev(ctx.evdev_fd);
@@ -147,26 +145,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    fprintf(stderr, "[main] running — Ctrl-C to stop\n");
-
     pthread_t watchdog;
     pthread_create(&watchdog, NULL, lws_watchdog, lws_ctx);
 
     while (running) {
-        /* lws_service blocks until I/O or timeout; watchdog calls
-         * lws_cancel_service() every 1ms so we return promptly */
         lws_service(lws_ctx, 5);
 
-        /* Read all pending gamepad events */
         int n = evdev_read_batch(ctx.evdev_fd, ctx.pending, MAX_BATCH);
         if (n > 0) {
             ctx.pending_n = n;
-            fprintf(stderr, "[evdev] %d events, connected=%d\n", n, ctx.connected);
             if (ctx.connected)
                 lws_callback_on_writable(ctx.wsi);
         }
 
-        /* Client reconnect */
         if (!ctx.connected && mode == MODE_CLIENT &&
             ctx.reconnect_after != 0 && time(NULL) >= ctx.reconnect_after) {
             ctx.reconnect_after = 0;
@@ -182,6 +173,5 @@ int main(int argc, char **argv)
         free(ctx.remote_vpad);
     }
     evdev_close(ctx.evdev_fd);
-    fprintf(stderr, "[main] bye\n");
     return 0;
 }

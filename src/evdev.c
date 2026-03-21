@@ -2,7 +2,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <dirent.h>
@@ -38,8 +37,6 @@ static bool fd_is_gamepad(int fd)
 
 const char *evdev_find_gamepad(char *buf, size_t bufsz)
 {
-    char name[256];
-
     /* Primary: by-id entries ending in -event-joystick */
     DIR *d = opendir("/dev/input/by-id");
     if (d) {
@@ -51,11 +48,8 @@ const char *evdev_find_gamepad(char *buf, size_t bufsz)
             snprintf(buf, bufsz, "/dev/input/by-id/%s", ent->d_name);
             int fd = open(buf, O_RDONLY | O_NONBLOCK);
             if (fd < 0) continue;
-            name[0] = '\0';
-            ioctl(fd, EVIOCGNAME(sizeof(name)), name);
             close(fd);
             closedir(d);
-            fprintf(stderr, "[evdev] found gamepad: %s (%s)\n", buf, name);
             return buf;
         }
         closedir(d);
@@ -63,7 +57,7 @@ const char *evdev_find_gamepad(char *buf, size_t bufsz)
 
     /* Fallback: numerically sorted capability scan */
     d = opendir("/dev/input");
-    if (!d) { perror("opendir /dev/input"); return NULL; }
+    if (!d) return NULL;
 
     int nums[256], count = 0;
     struct dirent *ent;
@@ -81,16 +75,11 @@ const char *evdev_find_gamepad(char *buf, size_t bufsz)
         int fd = open(buf, O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
         bool is_gp = fd_is_gamepad(fd);
-        if (is_gp) {
-            name[0] = '\0';
-            ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-            fprintf(stderr, "[evdev] found gamepad: %s (%s)\n", buf, name);
-        }
         close(fd);
         if (is_gp) return buf;
     }
 
-    fprintf(stderr, "[evdev] no gamepad found\n");
+    fprintf(stderr, "error: no gamepad found\n");
     return NULL;
 }
 
@@ -145,8 +134,6 @@ int evdev_read_batch(int fd, WireEvent *out, int max)
         out[n].value = ev.value;
         n++;
     }
-    if (n == 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ENODEV)
-        perror("evdev: read");
     return n;
 }
 

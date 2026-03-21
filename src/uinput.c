@@ -11,11 +11,10 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
 {
     dev->fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
     if (dev->fd < 0) {
-        perror("uinput: open /dev/uinput");
+        perror("uinput: open");
         return -1;
     }
 
-    /* Enable event types that the remote device has */
     for (int k = 0; k < WIRE_KEY_BYTES * 8; k++)
         if (desc->key_bits[k / 8] & (1 << (k % 8))) {
             ioctl(dev->fd, UI_SET_EVBIT, EV_KEY);
@@ -28,17 +27,14 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
         }
     ioctl(dev->fd, UI_SET_EVBIT, EV_SYN);
 
-    /* Register each button */
     for (int k = 0; k < WIRE_KEY_BYTES * 8; k++)
         if (desc->key_bits[k / 8] & (1 << (k % 8)))
             ioctl(dev->fd, UI_SET_KEYBIT, k);
 
-    /* Register each abs axis */
     for (int a = 0; a < WIRE_ABS_CNT; a++)
         if (desc->abs_bits[a / 8] & (1 << (a % 8)))
             ioctl(dev->fd, UI_SET_ABSBIT, a);
 
-    /* Device metadata — same name and IDs as the remote's physical device */
     struct uinput_setup setup;
     memset(&setup, 0, sizeof(setup));
     setup.id.bustype = desc->bustype;
@@ -49,7 +45,6 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
     setup.name[sizeof(setup.name) - 1] = '\0';
     ioctl(dev->fd, UI_DEV_SETUP, &setup);
 
-    /* Axis ranges */
     for (int a = 0; a < WIRE_ABS_CNT; a++) {
         if (!(desc->abs_bits[a / 8] & (1 << (a % 8))))
             continue;
@@ -71,7 +66,6 @@ int uinput_create(UinputDev *dev, const DeviceMsg *desc)
         return -1;
     }
 
-    fprintf(stderr, "[uinput] created virtual device: %s\n", desc->name);
     return 0;
 }
 
@@ -84,7 +78,7 @@ void uinput_write_events(UinputDev *dev, const WireEvent *events, int count)
         ev.code  = events[i].code;
         ev.value = events[i].value;
         if (write(dev->fd, &ev, sizeof(ev)) != (ssize_t)sizeof(ev))
-            perror("uinput: write");
+            break;
     }
 }
 
