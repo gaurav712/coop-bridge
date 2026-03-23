@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdbool.h>
-#include <linux/limits.h>
 #include "net.h"
+#include <linux/limits.h>
+#include <stdbool.h>
 
 /* Scan /dev/input/ and return path of first gamepad. buf must be PATH_MAX. */
 const char *evdev_find_gamepad(char *buf, size_t bufsz);
